@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QVBoxLayout,
 )
+from screenshot import ScreenCapture
 
 class MainWindow(QWidget):
 
@@ -23,10 +24,14 @@ class MainWindow(QWidget):
 
         self.setLayout(layout)
 
+        self.screen_capture = ScreenCapture()
+
         self.start_button.clicked.connect(self.start_translation)
 
     def start_translation(self):
-        print("Start button clicked!")
+        self.screen_capture.capture()
+
+
 
 
 
