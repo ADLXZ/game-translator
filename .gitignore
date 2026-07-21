@@ -1,0 +1,24 @@
+# Python virtual environments
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# PyCharm
+.idea/
+
+# Generated screenshots
+screenshot.png
+screenshots/
+*.png
+
+# Secrets
+.env
+
+# Windows files
+Thumbs.db
+Desktop.ini
+
+
