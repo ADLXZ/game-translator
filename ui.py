@@ -2,6 +2,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QPushButton,
     QLabel,
+    QTextEdit,
     QVBoxLayout,
 )
 from screenshot import ScreenCapture
@@ -17,12 +18,14 @@ class MainWindow(QWidget):
 
         self.start_button = QPushButton("Start Translation")
         self.status_label = QLabel("Status: Ready")
+        self.result_text = QTextEdit()
+        self.result_text.setReadOnly(True)
+        self.result_text.setPlaceholderText("Detected text will appear here.")
 
         layout = QVBoxLayout()
-
         layout.addWidget(self.start_button)
         layout.addWidget(self.status_label)
-
+        layout.addWidget(self.result_text)
         self.setLayout(layout)
 
         self.screen_capture = ScreenCapture()
@@ -31,12 +34,21 @@ class MainWindow(QWidget):
         self.start_button.clicked.connect(self.start_translation)
 
     def start_translation(self):
+        self.status_label.setText("Status: Capturing screen...")
+
         image_path = self.screen_capture.capture()
+
+        self.status_label.setText("Status: Recognizing text...")
 
         detected_text = self.ocr_reader.read_text(image_path)
 
-        print("Detected text:")
-        print(detected_text)
+        formatted_text = "\n".join(detected_text)
+
+        self.result_text.setPlainText(formatted_text)
+        self.status_label.setText("Status: Complete")
+
+
+
 
 
 
