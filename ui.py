@@ -33,14 +33,15 @@ class MainWindow(QWidget):
         self.start_button.clicked.connect(self.start_translation)
 
     def start_translation(self):
-        self.status_label.setText("Status: Recognizing screen...")
+        self.status_label.setText("Status: Translating screen...")
 
-        detected_text = self.engine.translate_screen()
+        translated_text = self.engine.translate_screen()
 
-        formatted_text = "\n".join(detected_text)
-
-        self.result_text.setPlainText(formatted_text)
+        self.result_text.setPlainText(translated_text)
         self.status_label.setText("Status: Complete")
+
+
+
 
 
 
