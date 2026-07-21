@@ -1,16 +1,20 @@
 import sys
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication
+
+from ui import MainWindow
 
 
-app = QApplication(sys.argv)
+def main():
+    app = QApplication(sys.argv)
 
-window = QWidget()
-window.setWindowTitle("Game Translator")
-window.resize(600, 400)
+    window = MainWindow()
+    window.show()
 
-window.show()
+    app.exec()
 
-app.exec()
+
+if __name__ == "__main__":
+    main()
 
 
