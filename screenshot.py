@@ -9,4 +9,6 @@ class ScreenCapture:
 
         print(f"Screenshot saved to: {filename}")
 
+        return filename
+
 

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from screenshot import ScreenCapture
+from ocr import OCRReader
 
 class MainWindow(QWidget):
 
@@ -25,11 +26,20 @@ class MainWindow(QWidget):
         self.setLayout(layout)
 
         self.screen_capture = ScreenCapture()
+        self.ocr_reader = OCRReader()
 
         self.start_button.clicked.connect(self.start_translation)
 
     def start_translation(self):
-        self.screen_capture.capture()
+        image_path = self.screen_capture.capture()
+
+        detected_text = self.ocr_reader.read_text(image_path)
+
+        print("Detected text:")
+        print(detected_text)
+
+
+
 
 
 

@@ -21,4 +21,7 @@ screenshots/
 Thumbs.db
 Desktop.ini
 
+*.pyc
+screenshot/*.png
+
 
