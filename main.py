@@ -1,18 +1,16 @@
-import mss
-import mss.tools
+import sys
 
-with mss.MSS() as sct:
+from PySide6.QtWidgets import QApplication, QWidget
 
-    monitor = sct.monitors[1]
 
-    screenshot = sct.grab(monitor)
+app = QApplication(sys.argv)
 
-    mss.tools.to_png(
-        screenshot.rgb,
-        screenshot.size,
-        output="screenshot.png"
-    )
+window = QWidget()
+window.setWindowTitle("Game Translator")
+window.resize(600, 400)
 
-print("截图成功！")
+window.show()
+
+app.exec()
 
 
