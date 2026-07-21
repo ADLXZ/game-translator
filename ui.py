@@ -23,6 +23,14 @@ class MainWindow(QWidget):
 
         self.setLayout(layout)
 
+        self.start_button.clicked.connect(self.start_translation)
+
+    def start_translation(self):
+        print("Start button clicked!")
+
+
+
+
 
 
 
