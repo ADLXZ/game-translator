@@ -9,7 +9,14 @@ class TranslationEngine:
         self.text_translator = TextTranslator()
 
     def translate_screen(self):
-        image_path = self.screen_capture.capture()
+        test_region = {
+            "left": 680,
+            "top": 30,
+            "width": 550,
+            "height": 600,
+        }
+
+        image_path = self.screen_capture.capture(test_region)
 
         detected_lines = self.ocr_reader.read_text(image_path)
 
