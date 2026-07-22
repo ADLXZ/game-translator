@@ -1,32 +1,23 @@
-from pathlib import Path
-
 from mss import mss
-from mss.tools import to_png
+from PIL import Image
 
 
 class ScreenCapture:
-    def __init__(self):
-        self.output_path = Path("screenshots/screenshot.png")
-
     def capture(self, region=None):
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-
         with mss() as sct:
             if region is None:
-                filename = sct.shot(output=str(self.output_path))
+                monitor = sct.monitors[1]
             else:
-                screenshot = sct.grab(region)
+                monitor = region
 
-                to_png(
-                    screenshot.rgb,
-                    screenshot.size,
-                    output=str(self.output_path),
-                )
+            screenshot = sct.grab(monitor)
 
-                filename = str(self.output_path)
+            image = Image.frombytes(
+                "RGB",
+                screenshot.size,
+                screenshot.rgb,
+            )
 
-        print(f"Screenshot saved to: {filename}")
-
-        return filename
+        return image
 
 
