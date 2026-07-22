@@ -3,21 +3,18 @@ from ocr import OCRReader
 from translator import TextTranslator
 
 class TranslationEngine:
-
     def __init__(self):
         self.screen_capture = ScreenCapture()
         self.ocr_reader = OCRReader()
         self.text_translator = TextTranslator()
 
-    def translate_screen(self, region=None):
-        image_path = self.screen_capture.capture(region)
+    def capture_screen(self, region):
+        return self.screen_capture.capture(region)
 
-        detected_lines = self.ocr_reader.read_text(image_path)
-
-        if not detected_lines:
-            return "", ""
-
-        original_text = "\n".join(detected_lines).strip()
+    def translate_screenshot(self, screenshot):
+        original_text = self.ocr_reader.read_text(
+            screenshot
+        )
 
         if not original_text:
             return "", ""
@@ -27,6 +24,16 @@ class TranslationEngine:
         )
 
         return original_text, translated_text
+
+    def translate_screen(self, region):
+        screenshot = self.capture_screen(region)
+
+        return self.translate_screenshot(
+            screenshot
+        )
+
+
+
 
 
 

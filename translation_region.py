@@ -277,13 +277,29 @@ class TranslationRegion(QWidget):
 
         region = self.get_capture_region()
 
-        self.hide()
-        QApplication.processEvents()
+        try:
+            self.hide()
+            QApplication.processEvents()
+
+            screenshot = self.engine.capture_screen(
+                region
+            )
+
+        except Exception as error:
+            self.handle_translation_error(str(error))
+            self.is_translating = False
+            return
+
+        finally:
+            self.show()
+            self.raise_()
+            self.update_overlay_position()
 
         self.translation_thread = QThread()
+
         self.translation_worker = TranslationWorker(
             self.engine,
-            region,
+            screenshot,
         )
 
         self.translation_worker.moveToThread(
@@ -348,12 +364,7 @@ class TranslationRegion(QWidget):
     def cleanup_translation_thread(self):
         self.translation_worker = None
         self.translation_thread = None
-
         self.is_translating = False
-
-        self.show()
-        self.raise_()
-        self.update_overlay_position()
 
     def is_in_resize_area(self, position):
         return (
