@@ -1,8 +1,9 @@
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 from overlay_window import OverlayWindow
+from translation_worker import TranslationWorker
 
 
 class TranslationRegion(QWidget):
@@ -15,6 +16,9 @@ class TranslationRegion(QWidget):
         self.is_translating = False
         self.last_original_text = ""
         self.is_auto_translating = False
+
+        self.translation_thread = None
+        self.translation_worker = None
 
         self.translation_timer = QTimer(self)
         self.translation_timer.setInterval(2000)
@@ -141,36 +145,11 @@ class TranslationRegion(QWidget):
         if self.is_translating:
             return
 
-        self.is_translating = True
-        self.overlay.set_translation("Translating...")
+        self.overlay.set_translation(
+            "Translating..."
+        )
 
-        region = self.get_capture_region()
-
-        self.hide()
-        QApplication.processEvents()
-
-        try:
-            original_text, translated_text = (
-                self.engine.translate_screen(region)
-            )
-
-            if translated_text:
-                self.overlay.set_translation(translated_text)
-            else:
-                self.overlay.set_translation("No text detected")
-
-        except Exception as error:
-            print("Translation error:", error)
-
-            self.overlay.set_translation(
-                f"Translation failed:\n{error}"
-            )
-
-        finally:
-            self.show()
-            self.raise_()
-            self.update_overlay_position()
-            self.is_translating = False
+        self.start_background_translation()
 
     def toggle_auto_translation(self):
         if self.is_auto_translating:
@@ -192,10 +171,10 @@ class TranslationRegion(QWidget):
         self.auto_translate_once()
 
     def stop_auto_translation(self):
-        self.translation_timer.stop()
+        print("Stopping auto translation")
 
+        self.translation_timer.stop()
         self.is_auto_translating = False
-        self.is_translating = False
 
         self.overlay.set_translation(
             "Auto translation stopped"
@@ -210,6 +189,12 @@ class TranslationRegion(QWidget):
         if self.is_translating:
             return
 
+        self.start_background_translation()
+
+    def start_background_translation(self):
+        if self.is_translating:
+            return
+
         self.is_translating = True
 
         region = self.get_capture_region()
@@ -217,38 +202,80 @@ class TranslationRegion(QWidget):
         self.hide()
         QApplication.processEvents()
 
-        try:
-            original_text, translated_text = (
-                self.engine.translate_screen(region)
-            )
+        self.translation_thread = QThread()
+        self.translation_worker = TranslationWorker(
+            self.engine,
+            region,
+        )
 
-            if not original_text:
-                return
+        self.translation_worker.moveToThread(
+            self.translation_thread
+        )
 
-            if original_text == self.last_original_text:
-                return
+        self.translation_thread.started.connect(
+            self.translation_worker.run
+        )
 
-            self.last_original_text = original_text
+        self.translation_worker.finished.connect(
+            self.handle_translation_result
+        )
 
-            if translated_text:
+        self.translation_worker.error.connect(
+            self.handle_translation_error
+        )
+
+        self.translation_worker.finished.connect(
+            self.translation_thread.quit
+        )
+
+        self.translation_worker.error.connect(
+            self.translation_thread.quit
+        )
+
+        self.translation_thread.finished.connect(
+            self.cleanup_translation_thread
+        )
+
+        self.translation_thread.start()
+
+    def handle_translation_result(
+            self,
+            original_text,
+            translated_text,
+    ):
+        if not original_text:
+            if not self.is_auto_translating:
                 self.overlay.set_translation(
-                    translated_text
+                    "No text detected"
                 )
+            return
 
-        except Exception as error:
-            print("Auto translation error:", error)
+        if original_text == self.last_original_text:
+            return
 
+        self.last_original_text = original_text
+
+        if translated_text:
             self.overlay.set_translation(
-                f"Translation failed:\n{error}"
+                translated_text
             )
 
-        finally:
-            self.show()
-            self.raise_()
-            self.update_overlay_position()
-            self.is_translating = False
+    def handle_translation_error(self, error_message):
+        print("Translation error:", error_message)
 
+        self.overlay.set_translation(
+            f"Translation failed:\n{error_message}"
+        )
 
+    def cleanup_translation_thread(self):
+        self.translation_worker = None
+        self.translation_thread = None
+
+        self.is_translating = False
+
+        self.show()
+        self.raise_()
+        self.update_overlay_position()
 
 
 
