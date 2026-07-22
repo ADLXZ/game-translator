@@ -82,13 +82,16 @@ class MainWindow(QWidget):
         print("Selected region:", region)
 
     def add_translation_region(self):
-        region = TranslationRegion()
+        region = TranslationRegion(self.engine)
 
         self.translation_regions.append(region)
 
         self.status_label.setText(
             f"Status: {len(self.translation_regions)} region(s)"
         )
+
+
+
 
 
 

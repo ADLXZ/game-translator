@@ -3,6 +3,7 @@ from ocr import OCRReader
 from translator import TextTranslator
 
 class TranslationEngine:
+
     def __init__(self):
         self.screen_capture = ScreenCapture()
         self.ocr_reader = OCRReader()
@@ -13,11 +14,22 @@ class TranslationEngine:
 
         detected_lines = self.ocr_reader.read_text(image_path)
 
-        original_text = "\n".join(detected_lines)
+        if not detected_lines:
+            return ""
 
-        translated_text = self.text_translator.translate(original_text)
+        original_text = "\n".join(detected_lines).strip()
+
+        if not original_text:
+            return ""
+
+        translated_text = self.text_translator.translate(
+            original_text
+        )
 
         return translated_text
+
+
+
 
 
 
