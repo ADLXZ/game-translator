@@ -1,122 +1,59 @@
-from PySide6.QtWidgets import (
-    QWidget,
-    QPushButton,
-    QLabel,
-    QTextEdit,
-    QVBoxLayout,
-)
+from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 from engine import TranslationEngine
-from region_selector import RegionSelector
 from translation_region import TranslationRegion
 
-class MainWindow(QWidget):
 
+class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Game Translator")
-        self.resize(600, 400)
-
-        self.start_button = QPushButton("Start Translation")
-        self.status_label = QLabel("Status: Ready")
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setPlaceholderText("Detected text will appear here.")
-        self.select_region_button = QPushButton("Select Region")
-        self.add_region_button = QPushButton("Add Translation Region")
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.select_region_button)
-        layout.addWidget(self.start_button)
-        layout.addWidget(self.add_region_button)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.result_text)
-        self.setLayout(layout)
-
-        self.selected_region = None
-        self.region_selector = None
-        self.select_region_button.clicked.connect(self.open_region_selector)
-
-        self.translation_regions = []
-        self.add_region_button.clicked.connect(
-            self.add_translation_region
-        )
-
         self.engine = TranslationEngine()
+        self.translation_regions = []
+        self.regions_in_edit_mode = True
 
-        self.start_button.clicked.connect(self.start_translation)
+        self.setWindowTitle("Game Translator")
+        self.resize(320, 180)
 
-    def start_translation(self):
-        if self.selected_region is None:
-            self.status_label.setText(
-                "Status: Please select a region first"
-            )
-            return
+        layout = QVBoxLayout(self)
 
-        self.status_label.setText("Status: Translating screen...")
-
-        translated_text = self.engine.translate_screen(
-            self.selected_region
+        self.create_region_button = QPushButton("创建翻译区域")
+        self.create_region_button.clicked.connect(
+            self.create_translation_region
         )
 
-        self.result_text.setPlainText(translated_text)
-        self.status_label.setText("Status: Complete")
-
-    def open_region_selector(self):
-        self.status_label.setText("Status: Select a region...")
-
-        self.region_selector = RegionSelector()
-        self.region_selector.region_selected.connect(
-            self.save_selected_region
+        self.mode_button = QPushButton("进入使用模式")
+        self.mode_button.clicked.connect(
+            self.toggle_region_edit_mode
         )
 
-    def save_selected_region(self, region):
-        self.selected_region = region
+        layout.addWidget(self.create_region_button)
+        layout.addWidget(self.mode_button)
 
-        self.status_label.setText(
-            "Status: Region selected "
-            f"({region['width']} × {region['height']})"
-        )
-
-        print("Selected region:", region)
-
-    def add_translation_region(self):
+    def create_translation_region(self):
         region = TranslationRegion(self.engine)
-
+        region.closed.connect(self.remove_translation_region)
+        region.show()
+        region.set_edit_mode(self.regions_in_edit_mode)
         self.translation_regions.append(region)
 
-        self.status_label.setText(
-            f"Status: {len(self.translation_regions)} region(s)"
+    def remove_translation_region(self, region):
+        if region in self.translation_regions:
+            self.translation_regions.remove(region)
+
+    def toggle_region_edit_mode(self):
+        self.regions_in_edit_mode = not self.regions_in_edit_mode
+
+        for region in list(self.translation_regions):
+            region.set_edit_mode(self.regions_in_edit_mode)
+
+        self.mode_button.setText(
+            "进入使用模式"
+            if self.regions_in_edit_mode
+            else "进入编辑模式"
         )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    def closeEvent(self, event):
+        for region in list(self.translation_regions):
+            region.close()
+        super().closeEvent(event)

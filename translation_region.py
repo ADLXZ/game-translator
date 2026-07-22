@@ -1,94 +1,165 @@
-from PySide6.QtCore import QRect, Qt, QThread, QTimer
-from PySide6.QtGui import QColor, QPainter, QPen
+
+import ctypes
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
 from overlay_window import OverlayWindow
+from PySide6.QtCore import QRect
 from translation_worker import TranslationWorker
+from PySide6.QtGui import QPainter, QPen, QColor
+
+
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+def exclude_window_from_capture(widget):
+    """让 Windows 截图和录屏忽略这个窗口。"""
+    try:
+        hwnd = int(widget.winId())
+
+        result = ctypes.windll.user32.SetWindowDisplayAffinity(
+            hwnd,
+            WDA_EXCLUDEFROMCAPTURE,
+        )
+
+        if not result:
+            print("Warning: failed to exclude window from capture")
+
+    except Exception as error:
+        print("Display affinity error:", error)
+
+
 
 
 class TranslationRegion(QWidget):
+    closed = Signal(object)
 
     def __init__(self, engine):
         super().__init__()
 
         self.engine = engine
+
         self.drag_position = None
         self.is_resizing = False
         self.resize_margin = 16
         self.minimum_region_width = 120
         self.minimum_region_height = 60
-        self.is_translating = False
-        self.last_original_text = ""
-        self.is_auto_translating = False
+        self.close_button_size = 22
 
-        self.translation_thread = None
-        self.translation_worker = None
+        self.edit_mode = True
+        self.is_translating = False
+        self.is_auto_translating = False
+        self.last_original_text = ""
+
+        # self.translation_thread = None
+        # self.translation_worker = None
+
+        self._request_id = 0
+        self._pending_capture_region = None
+        self._overlay_was_visible = False
+        self._closing = False
 
         self.translation_timer = QTimer(self)
-        self.translation_timer.setInterval(2000)
-        self.translation_timer.timeout.connect(
-            self.auto_translate_once
-        )
+        self.translation_timer.setInterval(3000)
+        self.translation_timer.timeout.connect(self.auto_translate_once)
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
         )
-
-        self.setAttribute(
-            Qt.WidgetAttribute.WA_TranslucentBackground
-        )
-
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
 
         self.resize(500, 160)
         self.move(300, 300)
 
         self.overlay = OverlayWindow()
-        self.overlay.set_translation(
-            "Double-click the region to translate"
-        )
+        self.overlay.set_translation("Double-click the region to translate")
 
-        self.show()
-        self.update_overlay_position()
+    def showEvent(self, event):
+        super().showEvent(event)
+
+        exclude_window_from_capture(self)
+
+        if not self._closing and not self.is_translating:
+            self.update_overlay_position()
+            self.overlay.show()
+            self.overlay.raise_()
 
     def paintEvent(self, event):
+        super().paintEvent(event)
+
+        if not self.edit_mode:
+            return
+
         painter = QPainter(self)
+        border_color = (
+            Qt.GlobalColor.green
+            if self.is_auto_translating
+            else Qt.GlobalColor.red
+        )
 
+        # 画边框
+        painter.setPen(QPen(border_color, 3))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+
+        # 左上角关闭按钮
+        button_rect = QRect(
+            6,
+            6,
+            self.close_button_size,
+            self.close_button_size,
+        )
+
+        painter.save()
+
+        painter.setPen(Qt.GlobalColor.white)
+        painter.setBrush(QColor(220, 60, 60))
+        painter.drawEllipse(button_rect)
+
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(14)
+        painter.setFont(font)
+
+        painter.drawText(
+            button_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            "×",
+        )
+
+        painter.restore()
+
+        handle_size = 14
         painter.fillRect(
-            self.rect(),
-            QColor(0, 0, 0, 40),
-        )
-
-        if self.is_auto_translating:
-            pen = QPen(Qt.GlobalColor.green)
-        else:
-            pen = QPen(Qt.GlobalColor.red)
-
-        pen.setWidth(2)
-
-        painter.setPen(pen)
-        painter.drawRect(
-            self.rect().adjusted(1, 1, -2, -2)
-        )
-
-        handle_size = 12
-
-        handle_rect = QRect(
-            self.width() - handle_size - 2,
-            self.height() - handle_size - 2,
+            self.width() - handle_size,
+            self.height() - handle_size,
             handle_size,
             handle_size,
-        )
-
-        painter.fillRect(
-            handle_rect,
-            pen.color(),
+            border_color,
         )
 
     def mousePressEvent(self, event):
+        button_rect = QRect(
+            6,
+            6,
+            self.close_button_size,
+            self.close_button_size,
+        )
+
+        if (
+                self.edit_mode
+                and event.button() == Qt.MouseButton.LeftButton
+                and button_rect.contains(event.position().toPoint())
+        ):
+            self.close()
+            event.accept()
+            return
+
         if event.button() == Qt.MouseButton.RightButton:
             self.toggle_auto_translation()
             event.accept()
@@ -100,70 +171,46 @@ class TranslationRegion(QWidget):
         if self.is_in_resize_area(event.position()):
             self.is_resizing = True
             self.drag_position = None
-
-            self.setCursor(
-                Qt.CursorShape.SizeFDiagCursor
-            )
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
         else:
             self.is_resizing = False
-
             self.drag_position = (
-                    event.globalPosition().toPoint()
-                    - self.frameGeometry().topLeft()
+                event.globalPosition().toPoint()
+                - self.frameGeometry().topLeft()
             )
-
-            self.setCursor(
-                Qt.CursorShape.SizeAllCursor
-            )
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
 
         event.accept()
 
     def mouseMoveEvent(self, event):
         if self.is_resizing:
-            new_width = max(
-                self.minimum_region_width,
-                round(event.position().x()),
-            )
-
-            new_height = max(
-                self.minimum_region_height,
-                round(event.position().y()),
-            )
-
             self.resize(
-                new_width,
-                new_height,
+                max(self.minimum_region_width, round(event.position().x())),
+                max(self.minimum_region_height, round(event.position().y())),
             )
-
             self.update_overlay_position()
             self.update()
-
             event.accept()
             return
 
         if (
-                self.drag_position is not None
-                and event.buttons() & Qt.MouseButton.LeftButton
+            self.drag_position is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
         ):
-            new_position = (
-                    event.globalPosition().toPoint()
-                    - self.drag_position
+            self.move(
+                event.globalPosition().toPoint()
+                - self.drag_position
             )
-
-            self.move(new_position)
             self.update_overlay_position()
-
             event.accept()
             return
 
-        if self.is_in_resize_area(event.position()):
-            self.setCursor(
-                Qt.CursorShape.SizeFDiagCursor
-            )
-        else:
-            self.setCursor(
-                Qt.CursorShape.SizeAllCursor
-            )
+        cursor = (
+            Qt.CursorShape.SizeFDiagCursor
+            if self.is_in_resize_area(event.position())
+            else Qt.CursorShape.SizeAllCursor
+        )
+        self.setCursor(cursor)
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -171,16 +218,6 @@ class TranslationRegion(QWidget):
 
         self.drag_position = None
         self.is_resizing = False
-
-        if self.is_in_resize_area(event.position()):
-            self.setCursor(
-                Qt.CursorShape.SizeFDiagCursor
-            )
-        else:
-            self.setCursor(
-                Qt.CursorShape.SizeAllCursor
-            )
-
         self.update_overlay_position()
         event.accept()
 
@@ -189,43 +226,45 @@ class TranslationRegion(QWidget):
             self.translate_once()
             event.accept()
 
-    def update_overlay_position(self):
-        gap = 20
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if hasattr(self, "overlay") and not self.is_translating:
+            self.update_overlay_position()
 
-        self.overlay.move(
-            self.x() + self.width() + gap,
-            self.y()
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "overlay") and not self.is_translating:
+            self.update_overlay_position()
+
+    def update_overlay_position(self):
+        if not hasattr(self, "overlay"):
+            return
+
+        margin = 4
+        global_position = self.mapToGlobal(self.rect().topLeft())
+
+        self.overlay.setGeometry(
+            global_position.x() + margin,
+            global_position.y() + margin,
+            max(1, self.width() - margin * 2),
+            max(1, self.height() - margin * 2),
         )
+        self.overlay.raise_()
 
     def get_capture_region(self):
-        top_left_global = self.mapToGlobal(
-            self.rect().topLeft()
-        )
-
+        top_left_global = self.mapToGlobal(self.rect().topLeft())
         scale_factor = self.devicePixelRatioF()
 
         return {
-            "left": round(
-                top_left_global.x() * scale_factor
-            ),
-            "top": round(
-                top_left_global.y() * scale_factor
-            ),
-            "width": round(
-                self.width() * scale_factor
-            ),
-            "height": round(
-                self.height() * scale_factor
-            ),
+            "left": round(top_left_global.x() * scale_factor),
+            "top": round(top_left_global.y() * scale_factor),
+            "width": round(self.width() * scale_factor),
+            "height": round(self.height() * scale_factor),
         }
 
     def translate_once(self):
         if self.is_translating:
             return
-
-        self.overlay.set_translation(
-            "Translating..."
-        )
 
         self.start_background_translation()
 
@@ -238,110 +277,126 @@ class TranslationRegion(QWidget):
     def start_auto_translation(self):
         self.is_auto_translating = True
         self.last_original_text = ""
-
         self.translation_timer.start()
-
-        self.overlay.set_translation(
-            "Auto translation started..."
-        )
-
+        self.overlay.set_translation("Auto translation started...")
         self.update()
         self.auto_translate_once()
 
     def stop_auto_translation(self):
-        print("Stopping auto translation")
-
         self.translation_timer.stop()
         self.is_auto_translating = False
 
-        self.overlay.set_translation(
-            "Auto translation stopped"
-        )
+        self._request_id += 1
 
+        self.overlay.set_translation("Auto translation stopped")
         self.update()
 
     def auto_translate_once(self):
-        if not self.is_auto_translating:
+        if not self.is_auto_translating or self.is_translating:
             return
-
-        if self.is_translating:
-            return
-
         self.start_background_translation()
 
     def start_background_translation(self):
-        if self.is_translating:
+        if self.is_translating or self._closing:
             return
 
         self.is_translating = True
+        self._request_id += 1
+        request_id = self._request_id
+        self._pending_capture_region = self.get_capture_region()
+        self._overlay_was_visible = self.overlay.isVisible()
 
-        region = self.get_capture_region()
+        QTimer.singleShot(
+            0,
+            lambda rid=request_id: self._capture_after_hidden(rid),
+        )
 
-        try:
-            self.hide()
-            QApplication.processEvents()
-
-            screenshot = self.engine.capture_screen(
-                region
-            )
-
-        except Exception as error:
-            self.handle_translation_error(str(error))
+    def _capture_after_hidden(self, request_id):
+        if self._closing or request_id != self._request_id:
             self.is_translating = False
             return
 
+        try:
+            screenshot = self.engine.capture_screen(
+                self._pending_capture_region
+            )
+
+        except Exception as error:
+            self._restore_windows_after_capture()
+
+            self.handle_translation_error(
+                request_id,
+                str(error),
+            )
+
+            self.is_translating = False
+            return
+
+        self._restore_windows_after_capture()
+
+        try:
+            original_text, translated_text = (
+                self.engine.translate_screenshot(screenshot)
+            )
+
+            self.handle_translation_result(
+                request_id,
+                original_text,
+                translated_text,
+            )
+
+        except Exception as error:
+            self.handle_translation_error(
+                request_id,
+                str(error),
+            )
+
         finally:
-            self.show()
+            self.is_translating = False
+
+    def _restore_windows_after_capture(self):
+        if self._closing:
+            return
+
+        self.update_overlay_position()
+
+        if self.edit_mode:
             self.raise_()
-            self.update_overlay_position()
 
-        self.translation_thread = QThread()
+        if self._overlay_was_visible:
+            self.overlay.show()
+            self.overlay.raise_()
 
-        self.translation_worker = TranslationWorker(
-            self.engine,
-            screenshot,
+    def _start_worker(self, request_id, screenshot):
+        """
+        暂时不使用 QThread 执行 EasyOCR。
+
+        EasyOCR 底层依赖 PyTorch。在部分 Windows 环境中，
+        从反复创建的 Qt 工作线程中运行 PyTorch，
+        可能导致程序发生原生崩溃，而不是普通 Python 异常。
+        """
+        raise RuntimeError(
+            "Translation worker is currently disabled."
         )
-
-        self.translation_worker.moveToThread(
-            self.translation_thread
-        )
-
-        self.translation_thread.started.connect(
-            self.translation_worker.run
-        )
-
-        self.translation_worker.finished.connect(
-            self.handle_translation_result
-        )
-
-        self.translation_worker.error.connect(
-            self.handle_translation_error
-        )
-
-        self.translation_worker.finished.connect(
-            self.translation_thread.quit
-        )
-
-        self.translation_worker.error.connect(
-            self.translation_thread.quit
-        )
-
-        self.translation_thread.finished.connect(
-            self.cleanup_translation_thread
-        )
-
-        self.translation_thread.start()
 
     def handle_translation_result(
             self,
+            request_id,
             original_text,
             translated_text,
     ):
+        if request_id != self._request_id or self._closing:
+            return
+
+        original_text = (original_text or "").strip()
+        translated_text = (translated_text or "").strip()
+
         if not original_text:
+            self.last_original_text = ""
+
             if not self.is_auto_translating:
-                self.overlay.set_translation(
-                    "No text detected"
-                )
+                self.overlay.set_translation("No text detected")
+
             return
 
         if original_text == self.last_original_text:
@@ -350,29 +405,66 @@ class TranslationRegion(QWidget):
         self.last_original_text = original_text
 
         if translated_text:
-            self.overlay.set_translation(
-                translated_text
-            )
+            if translated_text != self.overlay.text():
+                self.overlay.set_translation(translated_text)
+        else:
+            if not self.is_auto_translating:
+                if self.overlay.text() != "":
+                    self.overlay.set_translation("")
 
-    def handle_translation_error(self, error_message):
+    def handle_translation_error(self, request_id, error_message):
+        if request_id != self._request_id or self._closing:
+            return
+
         print("Translation error:", error_message)
-
         self.overlay.set_translation(
             f"Translation failed:\n{error_message}"
         )
 
-    def cleanup_translation_thread(self):
-        self.translation_worker = None
-        self.translation_thread = None
-        self.is_translating = False
+    # def cleanup_translation_thread(self):
+    #     self.translation_worker = None
+    #     self.translation_thread = None
+    #     self.is_translating = False
 
     def is_in_resize_area(self, position):
         return (
-                position.x() >= self.width() - self.resize_margin
-                and position.y() >= self.height() - self.resize_margin
+            position.x() >= self.width() - self.resize_margin
+            and position.y() >= self.height() - self.resize_margin
         )
 
+    def set_edit_mode(self, enabled):
+        self.edit_mode = bool(enabled)
+        click_through = not self.edit_mode
 
+        geometry = self.geometry()
+        was_visible = self.isVisible()
 
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            click_through,
+        )
+        self.setWindowFlag(
+            Qt.WindowType.WindowTransparentForInput,
+            click_through,
+        )
 
+        # Changing a top-level window flag can recreate the native window.
+        # Restore its geometry and visibility afterwards.
+        self.setGeometry(geometry)
+        if was_visible:
+            self.show()
 
+        if self.edit_mode:
+            self.raise_()
+
+        self.update_overlay_position()
+        self.update()
+        self.overlay.set_edit_mode(enabled)
+
+    def closeEvent(self, event):
+        self._closing = True
+        self._request_id += 1
+        self.translation_timer.stop()
+        self.overlay.close()
+        self.closed.emit(self)
+        super().closeEvent(event)

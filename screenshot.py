@@ -4,20 +4,21 @@ from PIL import Image
 
 class ScreenCapture:
     def capture(self, region=None):
-        with mss() as sct:
+        with mss() as screen_capture:
             if region is None:
-                monitor = sct.monitors[1]
+                monitor = screen_capture.monitors[1]
             else:
-                monitor = region
+                monitor = {
+                    "left": int(region["left"]),
+                    "top": int(region["top"]),
+                    "width": max(1, int(region["width"])),
+                    "height": max(1, int(region["height"])),
+                }
 
-            screenshot = sct.grab(monitor)
+            screenshot = screen_capture.grab(monitor)
 
-            image = Image.frombytes(
+            return Image.frombytes(
                 "RGB",
                 screenshot.size,
                 screenshot.rgb,
             )
-
-        return image
-
-
