@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 
 from engine import TranslationEngine
 from region_selector import RegionSelector
+from translation_region import TranslationRegion
 
 class MainWindow(QWidget):
 
@@ -23,10 +24,12 @@ class MainWindow(QWidget):
         self.result_text.setReadOnly(True)
         self.result_text.setPlaceholderText("Detected text will appear here.")
         self.select_region_button = QPushButton("Select Region")
+        self.add_region_button = QPushButton("Add Translation Region")
 
         layout = QVBoxLayout()
         layout.addWidget(self.select_region_button)
         layout.addWidget(self.start_button)
+        layout.addWidget(self.add_region_button)
         layout.addWidget(self.status_label)
         layout.addWidget(self.result_text)
         self.setLayout(layout)
@@ -34,6 +37,11 @@ class MainWindow(QWidget):
         self.selected_region = None
         self.region_selector = None
         self.select_region_button.clicked.connect(self.open_region_selector)
+
+        self.translation_regions = []
+        self.add_region_button.clicked.connect(
+            self.add_translation_region
+        )
 
         self.engine = TranslationEngine()
 
@@ -72,6 +80,18 @@ class MainWindow(QWidget):
         )
 
         print("Selected region:", region)
+
+    def add_translation_region(self):
+        region = TranslationRegion()
+
+        self.translation_regions.append(region)
+
+        self.status_label.setText(
+            f"Status: {len(self.translation_regions)} region(s)"
+        )
+
+
+
 
 
 
