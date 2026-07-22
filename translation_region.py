@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QThread, QTimer
+from PySide6.QtCore import QRect, Qt, QThread, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -13,6 +13,10 @@ class TranslationRegion(QWidget):
 
         self.engine = engine
         self.drag_position = None
+        self.is_resizing = False
+        self.resize_margin = 16
+        self.minimum_region_width = 120
+        self.minimum_region_height = 60
         self.is_translating = False
         self.last_original_text = ""
         self.is_auto_translating = False
@@ -37,6 +41,7 @@ class TranslationRegion(QWidget):
         )
 
         self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self.setMouseTracking(True)
 
         self.resize(500, 160)
         self.move(300, 300)
@@ -69,42 +74,115 @@ class TranslationRegion(QWidget):
             self.rect().adjusted(1, 1, -2, -2)
         )
 
-    def mousePressEvent(self, event):
-        print("Mouse pressed:", event.button())
+        handle_size = 12
 
+        handle_rect = QRect(
+            self.width() - handle_size - 2,
+            self.height() - handle_size - 2,
+            handle_size,
+            handle_size,
+        )
+
+        painter.fillRect(
+            handle_rect,
+            pen.color(),
+        )
+
+    def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.RightButton:
-            print("Right button detected")
             self.toggle_auto_translation()
             event.accept()
             return
 
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        if self.is_in_resize_area(event.position()):
+            self.is_resizing = True
+            self.drag_position = None
+
+            self.setCursor(
+                Qt.CursorShape.SizeFDiagCursor
+            )
+        else:
+            self.is_resizing = False
+
             self.drag_position = (
                     event.globalPosition().toPoint()
                     - self.frameGeometry().topLeft()
             )
 
-            event.accept()
+            self.setCursor(
+                Qt.CursorShape.SizeAllCursor
+            )
+
+        event.accept()
 
     def mouseMoveEvent(self, event):
+        if self.is_resizing:
+            new_width = max(
+                self.minimum_region_width,
+                round(event.position().x()),
+            )
+
+            new_height = max(
+                self.minimum_region_height,
+                round(event.position().y()),
+            )
+
+            self.resize(
+                new_width,
+                new_height,
+            )
+
+            self.update_overlay_position()
+            self.update()
+
+            event.accept()
+            return
+
         if (
-            self.drag_position is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
+                self.drag_position is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
         ):
             new_position = (
-                event.globalPosition().toPoint()
-                - self.drag_position
+                    event.globalPosition().toPoint()
+                    - self.drag_position
             )
 
             self.move(new_position)
             self.update_overlay_position()
 
             event.accept()
+            return
+
+        if self.is_in_resize_area(event.position()):
+            self.setCursor(
+                Qt.CursorShape.SizeFDiagCursor
+            )
+        else:
+            self.setCursor(
+                Qt.CursorShape.SizeAllCursor
+            )
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_position = None
-            event.accept()
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+
+        self.drag_position = None
+        self.is_resizing = False
+
+        if self.is_in_resize_area(event.position()):
+            self.setCursor(
+                Qt.CursorShape.SizeFDiagCursor
+            )
+        else:
+            self.setCursor(
+                Qt.CursorShape.SizeAllCursor
+            )
+
+        self.update_overlay_position()
+        event.accept()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -276,6 +354,12 @@ class TranslationRegion(QWidget):
         self.show()
         self.raise_()
         self.update_overlay_position()
+
+    def is_in_resize_area(self, position):
+        return (
+                position.x() >= self.width() - self.resize_margin
+                and position.y() >= self.height() - self.resize_margin
+        )
 
 
 
