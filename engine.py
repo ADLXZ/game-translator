@@ -213,6 +213,37 @@ class TranslationEngine(QObject):
                 self.shutdown
             )
 
+    def set_translation_provider(
+            self,
+            provider,
+    ):
+        if self._is_shutting_down:
+            return
+
+        normalized_provider = (
+            str(provider)
+            .strip()
+            .lower()
+        )
+
+        if (
+                normalized_provider
+                == self.text_translator.provider
+        ):
+            return
+
+        self.text_translator.set_provider(
+            normalized_provider
+        )
+
+        self._translation_cache.clear()
+        self._last_successful_text_by_region.clear()
+
+        print(
+            "Translation provider changed to:",
+            normalized_provider,
+        )
+
     # =====================================================
     # Public API
     # =====================================================
@@ -437,15 +468,20 @@ class TranslationEngine(QObject):
             )
             return
 
+        cache_key = (
+            self.text_translator.provider,
+            normalized_text,
+        )
+
         cached_translation = (
             self._translation_cache.get(
-                normalized_text
+                cache_key
             )
         )
 
         if cached_translation is not None:
             self._translation_cache.move_to_end(
-                normalized_text
+                cache_key
             )
 
             self._last_successful_text_by_region[
@@ -727,21 +763,26 @@ class TranslationEngine(QObject):
         return normalized
 
     def _store_cached_translation(
-        self,
-        normalized_text,
-        translated_text,
+            self,
+            normalized_text,
+            translated_text,
     ):
+        cache_key = (
+            self.text_translator.provider,
+            normalized_text,
+        )
+
         self._translation_cache[
-            normalized_text
+            cache_key
         ] = translated_text
 
         self._translation_cache.move_to_end(
-            normalized_text
+            cache_key
         )
 
         while (
-            len(self._translation_cache)
-            > self._cache_limit
+                len(self._translation_cache)
+                > self._cache_limit
         ):
             self._translation_cache.popitem(
                 last=False
@@ -818,5 +859,34 @@ class TranslationEngine(QObject):
                     f"Warning: {thread_name} worker "
                     "did not stop within five seconds."
                 )
+
+    def set_baidu_credentials(
+            self,
+            app_id,
+            secret_key,
+    ):
+        """
+        Update the Baidu credentials used by the
+        shared translation worker.
+        """
+        if self._is_shutting_down:
+            return
+
+        self.text_translator.set_baidu_credentials(
+            app_id,
+            secret_key,
+        )
+
+        # Credentials may belong to a different Baidu account,
+        # so old Baidu translation results must not be reused.
+        self._translation_cache.clear()
+        self._last_successful_text_by_region.clear()
+
+        print(
+            "Baidu Translate credentials updated."
+        )
+
+
+
 
 
