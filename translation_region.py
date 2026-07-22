@@ -46,6 +46,8 @@ class TranslationRegion(QWidget):
         self.minimum_region_width = 120
         self.minimum_region_height = 60
         self.close_button_size = 22
+        self.drag_handle_width = 54
+        self.drag_handle_height = 20
 
         self.edit_mode = True
         self.is_translating = False
@@ -89,6 +91,25 @@ class TranslationRegion(QWidget):
             self.overlay.show()
             self.overlay.raise_()
 
+    def get_drag_handle_rect(self):
+        return QRect(
+            (self.width() - self.drag_handle_width) // 2,
+            self.height() - self.drag_handle_height - 3,
+            self.drag_handle_width,
+            self.drag_handle_height,
+        )
+
+    def get_drag_hit_rect(self):
+        """真正用于点击检测，比视觉上的 Handle 大。"""
+        rect = self.get_drag_handle_rect()
+
+        return rect.adjusted(
+            -300,  # 左
+            -150,  # 上
+            300,  # 右
+            150,  # 下
+        )
+
     def paintEvent(self, event):
         super().paintEvent(event)
 
@@ -96,128 +117,238 @@ class TranslationRegion(QWidget):
             return
 
         painter = QPainter(self)
-        border_color = (
-            Qt.GlobalColor.green
-            if self.is_auto_translating
-            else Qt.GlobalColor.red
+        painter.setRenderHint(
+            QPainter.RenderHint.Antialiasing,
+            True,
         )
 
-        # 画边框
+        normal_pink = QColor(255, 125, 180)
+        active_pink = QColor(255, 70, 155)
+
+        border_color = (
+            active_pink
+            if self.is_auto_translating
+            else normal_pink
+        )
+
+        # 粉色选框
         painter.setPen(QPen(border_color, 3))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
 
-        # 左上角关闭按钮
+        painter.drawRect(
+            self.rect().adjusted(1, 1, -2, -2)
+        )
+
+        # 左上角关闭按钮区域
         button_rect = QRect(
-            6,
-            6,
+            4,
+            3,
             self.close_button_size,
             self.close_button_size,
         )
 
-        painter.save()
-
-        painter.setPen(Qt.GlobalColor.white)
-        painter.setBrush(QColor(220, 60, 60))
-        painter.drawEllipse(button_rect)
-
-        font = painter.font()
-        font.setBold(True)
-        font.setPixelSize(14)
-        painter.setFont(font)
-
-        painter.drawText(
-            button_rect,
-            Qt.AlignmentFlag.AlignCenter,
-            "×",
+        # 使用两条线绘制 ×，不再使用字体字符
+        painter.setPen(
+            QPen(
+                border_color,
+                2,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+            )
         )
 
-        painter.restore()
+        close_center_x = button_rect.center().x()
+        close_center_y = button_rect.center().y()
+        close_radius = 5
 
-        handle_size = 14
-        painter.fillRect(
-            self.width() - handle_size,
-            self.height() - handle_size,
-            handle_size,
-            handle_size,
-            border_color,
+        painter.drawLine(
+            close_center_x - close_radius,
+            close_center_y - close_radius,
+            close_center_x + close_radius,
+            close_center_y + close_radius,
         )
+
+        painter.drawLine(
+            close_center_x - close_radius,
+            close_center_y + close_radius,
+            close_center_x + close_radius,
+            close_center_y - close_radius,
+        )
+
+        # 下方中间拖动手柄区域
+        handle_rect = self.get_drag_hit_rect()
+
+        # 暂时关闭抗锯齿，避免小点边缘出现浅色像素
+        painter.setRenderHint(
+            QPainter.RenderHint.Antialiasing,
+            False,
+        )
+
+        dot_size = 3
+        horizontal_gap = 8
+        vertical_gap = 6
+
+        center_x = handle_rect.center().x()
+        center_y = handle_rect.center().y()
+
+        # 两行三列的小方点
+        for row in (-1, 1):
+            for column in (-1, 0, 1):
+                dot_x = center_x + column * horizontal_gap
+                dot_y = center_y + row * vertical_gap // 2
+
+                painter.fillRect(
+                    dot_x - dot_size // 2,
+                    dot_y - dot_size // 2,
+                    dot_size,
+                    dot_size,
+                    border_color,
+                )
+
+        # 重新开启抗锯齿，绘制右下角缩放线
+        painter.setRenderHint(
+            QPainter.RenderHint.Antialiasing,
+            True,
+        )
+
+        painter.setPen(
+            QPen(
+                border_color,
+                2,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+            )
+        )
+
+        bottom_right_x = self.width() - 5
+        bottom_right_y = self.height() - 5
+
+        for offset in (0, 5, 10):
+            painter.drawLine(
+                bottom_right_x - 5 - offset,
+                bottom_right_y,
+                bottom_right_x,
+                bottom_right_y - 5 - offset,
+            )
 
     def mousePressEvent(self, event):
+        if not self.edit_mode:
+            event.ignore()
+            return
+
+        mouse_position = event.position().toPoint()
+
         button_rect = QRect(
-            6,
-            6,
+            4,
+            3,
             self.close_button_size,
             self.close_button_size,
         )
 
+        # 关闭按钮
         if (
-                self.edit_mode
-                and event.button() == Qt.MouseButton.LeftButton
-                and button_rect.contains(event.position().toPoint())
+                event.button() == Qt.MouseButton.LeftButton
+                and button_rect.contains(mouse_position)
         ):
             self.close()
             event.accept()
             return
 
+        # 右键切换自动翻译
         if event.button() == Qt.MouseButton.RightButton:
             self.toggle_auto_translation()
             event.accept()
             return
 
         if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
             return
 
+        # 右下角缩放
         if self.is_in_resize_area(event.position()):
             self.is_resizing = True
             self.drag_position = None
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+
         else:
+            # 点住底部手柄或者框内其他位置都可以移动
             self.is_resizing = False
             self.drag_position = (
-                event.globalPosition().toPoint()
-                - self.frameGeometry().topLeft()
+                    event.globalPosition().toPoint()
+                    - self.frameGeometry().topLeft()
             )
-            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
         event.accept()
 
     def mouseMoveEvent(self, event):
+        if not self.edit_mode:
+            event.ignore()
+            return
+
         if self.is_resizing:
             self.resize(
-                max(self.minimum_region_width, round(event.position().x())),
-                max(self.minimum_region_height, round(event.position().y())),
+                max(
+                    self.minimum_region_width,
+                    round(event.position().x()),
+                ),
+                max(
+                    self.minimum_region_height,
+                    round(event.position().y()),
+                ),
             )
+
             self.update_overlay_position()
             self.update()
             event.accept()
             return
 
         if (
-            self.drag_position is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
+                self.drag_position is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
         ):
             self.move(
                 event.globalPosition().toPoint()
                 - self.drag_position
             )
+
             self.update_overlay_position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
 
-        cursor = (
-            Qt.CursorShape.SizeFDiagCursor
-            if self.is_in_resize_area(event.position())
-            else Qt.CursorShape.SizeAllCursor
-        )
+        mouse_position = event.position().toPoint()
+
+        if self.is_in_resize_area(event.position()):
+            cursor = Qt.CursorShape.SizeFDiagCursor
+
+        elif self.get_drag_hit_rect().contains(mouse_position):
+            cursor = Qt.CursorShape.OpenHandCursor
+
+        else:
+            cursor = Qt.CursorShape.SizeAllCursor
+
         self.setCursor(cursor)
 
     def mouseReleaseEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
             return
 
         self.drag_position = None
         self.is_resizing = False
+
+        mouse_position = event.position().toPoint()
+
+        if self.is_in_resize_area(event.position()):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+
+        elif self.get_drag_hit_rect().contains(mouse_position):
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+        else:
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+
         self.update_overlay_position()
         event.accept()
 
@@ -240,15 +371,15 @@ class TranslationRegion(QWidget):
         if not hasattr(self, "overlay"):
             return
 
-        margin = 4
         global_position = self.mapToGlobal(self.rect().topLeft())
 
         self.overlay.setGeometry(
-            global_position.x() + margin,
-            global_position.y() + margin,
-            max(1, self.width() - margin * 2),
-            max(1, self.height() - margin * 2),
+            global_position.x(),
+            global_position.y(),
+            self.width(),
+            self.height(),
         )
+
         self.overlay.raise_()
 
     def get_capture_region(self):
