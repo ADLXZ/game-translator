@@ -8,15 +8,8 @@ class TranslationEngine:
         self.ocr_reader = OCRReader()
         self.text_translator = TextTranslator()
 
-    def translate_screen(self):
-        test_region = {
-            "left": 680,
-            "top": 30,
-            "width": 550,
-            "height": 600,
-        }
-
-        image_path = self.screen_capture.capture(test_region)
+    def translate_screen(self, region=None):
+        image_path = self.screen_capture.capture(region)
 
         detected_lines = self.ocr_reader.read_text(image_path)
 
@@ -25,6 +18,9 @@ class TranslationEngine:
         translated_text = self.text_translator.translate(original_text)
 
         return translated_text
+
+
+
 
 
 
