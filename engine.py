@@ -1,7 +1,5 @@
 from collections import OrderedDict
-from threading import Lock
 import hashlib
-import time
 import re
 
 from PySide6.QtCore import (
@@ -16,36 +14,51 @@ from PySide6.QtWidgets import QApplication
 from ocr import OCRReader
 from screenshot import ScreenCapture
 from translator import TextTranslator
-from translation_worker import TranslationWorker
+from translation_worker import (
+    OCRWorker,
+    TextTranslationWorker,
+)
 
 
 class TranslationEngine(QObject):
     """
-    所有翻译区域共享的翻译引擎。
+    所有翻译区域共享的双流水线翻译引擎。
 
-    Scheduler 规则：
-    1. Worker 同一时间只执行一个任务。
-    2. 每个区域在等待队列中最多保留一个任务。
-    3. 同一区域再次提交时，新任务覆盖旧任务。
+    流程：
+
+        Screenshot
+            ↓
+        OCR Worker
+            ↓
+        Translation Worker
+            ↓
+        TranslationRegion
+
+    OCR 和网络翻译位于不同线程中，可以重叠执行。
     """
 
-    translation_requested = Signal(
-        str,
-        int,
-        object,
+    ocr_requested = Signal(
+        str,     # region_key
+        int,     # request_id
+        object,  # screenshot
+    )
+
+    text_translation_requested = Signal(
+        str,  # normalized_text
+        str,  # source_text
     )
 
     translation_finished = Signal(
-        str,
-        int,
-        str,
-        str,
+        str,  # region_key
+        int,  # request_id
+        str,  # original_text
+        str,  # translated_text
     )
 
     translation_failed = Signal(
-        str,
-        int,
-        str,
+        str,  # region_key
+        int,  # request_id
+        str,  # error_message
     )
 
     def __init__(self):
@@ -55,56 +68,154 @@ class TranslationEngine(QObject):
         self.ocr_reader = OCRReader()
         self.text_translator = TextTranslator()
 
-        self._processing_lock = Lock()
+        self._is_shutting_down = False
+
+        # -------------------------------------------------
+        # 翻译缓存
+        # -------------------------------------------------
 
         self._translation_cache = OrderedDict()
         self._cache_limit = 500
-        # 保存每个区域最近一次完成 OCR 的规范化文本。
-        self._last_ocr_text_by_region = {}
 
-        self._is_shutting_down = False
-
-        # 当前 Worker 正在处理的任务。
-        # 格式：
-        # (region_key, request_id)
-        self._active_task = None
-
-        # 等待任务。
-        # key: region_key
-        # value: (request_id, screenshot)
+        # 只保存已经成功处理过的 OCR 文本。
         #
-        # OrderedDict 可以保留区域进入队列的顺序。
-        self._pending_tasks = OrderedDict()
+        # key:
+        #     region_key
+        #
+        # value:
+        #     normalized_text
+        self._last_successful_text_by_region = {}
 
-        self._worker_thread = QThread(self)
+        # -------------------------------------------------
+        # OCR Scheduler
+        # -------------------------------------------------
 
-        self._worker = TranslationWorker(
-            self.translate_screenshot_sync
+        # 当前 OCR 正在处理的任务：
+        #
+        # (region_key, request_id)
+        self._active_ocr_task = None
+
+        # 每个区域最多保留一个尚未开始的 OCR 任务。
+        #
+        # key:
+        #     region_key
+        #
+        # value:
+        #     (request_id, screenshot)
+        self._pending_ocr_tasks = OrderedDict()
+
+        # -------------------------------------------------
+        # Translation Scheduler
+        # -------------------------------------------------
+
+        # 当前正在进行网络翻译的规范化文本。
+        self._active_translation_key = None
+
+        # 尚未开始翻译的文本。
+        #
+        # key:
+        #     normalized_text
+        #
+        # value:
+        #     source_text
+        self._pending_translation_tasks = (
+            OrderedDict()
         )
-        self._worker.moveToThread(self._worker_thread)
 
-        self.translation_requested.connect(
-            self._worker.process
+        # 相同文本的等待者。
+        #
+        # key:
+        #     normalized_text
+        #
+        # value:
+        #     [
+        #         (
+        #             region_key,
+        #             request_id,
+        #             original_text,
+        #         ),
+        #     ]
+        #
+        # 多个区域识别出相同文字时，
+        # 只发送一个翻译网络请求。
+        self._translation_waiters = {}
+
+        # -------------------------------------------------
+        # OCR Thread
+        # -------------------------------------------------
+
+        self._ocr_thread = QThread(self)
+
+        self._ocr_worker = OCRWorker(
+            self.ocr_reader.read_text
         )
 
-        self._worker.finished.connect(
-            self._handle_worker_finished
+        self._ocr_worker.moveToThread(
+            self._ocr_thread
         )
 
-        self._worker.error.connect(
-            self._handle_worker_error
+        self.ocr_requested.connect(
+            self._ocr_worker.process
         )
 
-        self._worker_thread.finished.connect(
-            self._worker.deleteLater
+        self._ocr_worker.finished.connect(
+            self._handle_ocr_finished
         )
 
-        self._worker_thread.start()
+        self._ocr_worker.error.connect(
+            self._handle_ocr_error
+        )
+
+        self._ocr_thread.finished.connect(
+            self._ocr_worker.deleteLater
+        )
+
+        self._ocr_thread.start()
+
+        # -------------------------------------------------
+        # Translation Thread
+        # -------------------------------------------------
+
+        self._translation_thread = QThread(self)
+
+        self._translation_worker = (
+            TextTranslationWorker(
+                self.text_translator.translate
+            )
+        )
+
+        self._translation_worker.moveToThread(
+            self._translation_thread
+        )
+
+        self.text_translation_requested.connect(
+            self._translation_worker.process
+        )
+
+        self._translation_worker.finished.connect(
+            self._handle_translation_finished
+        )
+
+        self._translation_worker.error.connect(
+            self._handle_translation_error
+        )
+
+        self._translation_thread.finished.connect(
+            self._translation_worker.deleteLater
+        )
+
+        self._translation_thread.start()
 
         app = QApplication.instance()
 
         if app is not None:
-            app.aboutToQuit.connect(self.shutdown)
+            app.aboutToQuit.connect(
+                self.shutdown
+            )
+
+    # =====================================================
+    # Public API
+    # =====================================================
 
     def capture_screen(self, region):
         return self.screen_capture.capture(region)
@@ -116,50 +227,94 @@ class TranslationEngine(QObject):
         screenshot,
     ):
         """
-        向 Scheduler 提交翻译任务。
+        向 OCR Scheduler 提交截图。
 
-        Worker 空闲：
-            立即执行。
+        OCR 空闲时立即执行。
 
-        Worker 忙碌：
-            放入等待队列。
-
-        同一区域已经存在等待任务：
-            使用新截图覆盖旧截图。
+        OCR 忙碌时：
+        同一区域只保留最新截图。
         """
         if self._is_shutting_down:
             return
 
-        if self._active_task is None:
-            self._dispatch_task(
+        if self._active_ocr_task is None:
+            self._dispatch_ocr_task(
                 region_key,
                 request_id,
                 screenshot,
             )
             return
 
-        # 覆盖这个区域之前尚未开始的旧任务。
-        self._pending_tasks[region_key] = (
+        self._pending_ocr_tasks[region_key] = (
             request_id,
             screenshot,
         )
 
-        # 将刚刚更新的区域移到队列末尾，
-        # 保持不同区域之间相对公平。
-        self._pending_tasks.move_to_end(region_key)
+        # 更新过的区域移到队列末尾。
+        self._pending_ocr_tasks.move_to_end(
+            region_key
+        )
 
     def cancel_region(self, region_key):
-        self._pending_tasks.pop(
+        """
+        移除区域尚未开始的任务和等待结果。
+
+        已经进入底层 OCR 或网络请求的操作不能强制中断，
+        但结果返回后不会再发给已关闭的区域。
+        """
+        self._pending_ocr_tasks.pop(
             region_key,
             None,
         )
 
-        self._last_ocr_text_by_region.pop(
+        self._last_successful_text_by_region.pop(
             region_key,
             None,
         )
 
-    def _dispatch_task(
+        empty_translation_keys = []
+
+        for normalized_text, waiters in (
+            self._translation_waiters.items()
+        ):
+            remaining_waiters = [
+                waiter
+                for waiter in waiters
+                if waiter[0] != region_key
+            ]
+
+            if remaining_waiters:
+                self._translation_waiters[
+                    normalized_text
+                ] = remaining_waiters
+            else:
+                empty_translation_keys.append(
+                    normalized_text
+                )
+
+        for normalized_text in (
+            empty_translation_keys
+        ):
+            self._translation_waiters.pop(
+                normalized_text,
+                None,
+            )
+
+            # 当前已经开始的网络请求无法取消。
+            if (
+                normalized_text
+                != self._active_translation_key
+            ):
+                self._pending_translation_tasks.pop(
+                    normalized_text,
+                    None,
+                )
+
+    # =====================================================
+    # OCR Scheduler
+    # =====================================================
+
+    def _dispatch_ocr_task(
         self,
         region_key,
         request_id,
@@ -168,263 +323,170 @@ class TranslationEngine(QObject):
         if self._is_shutting_down:
             return
 
-        self._active_task = (
+        self._active_ocr_task = (
             region_key,
             request_id,
         )
 
-        self.translation_requested.emit(
+        self.ocr_requested.emit(
             region_key,
             request_id,
             screenshot,
         )
 
-    def _dispatch_next_task(self):
+    def _dispatch_next_ocr_task(self):
         if self._is_shutting_down:
             return
 
-        if self._active_task is not None:
+        if self._active_ocr_task is not None:
             return
 
-        if not self._pending_tasks:
+        if not self._pending_ocr_tasks:
             return
 
         region_key, task = (
-            self._pending_tasks.popitem(last=False)
+            self._pending_ocr_tasks.popitem(
+                last=False
+            )
         )
 
         request_id, screenshot = task
 
-        self._dispatch_task(
+        self._dispatch_ocr_task(
             region_key,
             request_id,
             screenshot,
         )
 
-    def _normalize_ocr_text(self, text):
-        """
-        清理 OCR 产生的不稳定空格和换行。
-
-        只用于比较和缓存，不改变最终显示文本。
-        """
-        if not text:
-            return ""
-
-        normalized = text.strip()
-
-        # 连续空白统一成一个空格。
-        normalized = re.sub(
-            r"\s+",
-            " ",
-            normalized,
-        )
-
-        # 清除部分标点前面不稳定的空格。
-        normalized = re.sub(
-            r"\s+([,.!?;:，。！？；：])",
-            r"\1",
-            normalized,
-        )
-
-        return normalized
-
-    def translate_screenshot_sync(
-            self,
-            region_key,
-            screenshot,
-    ):
-        """
-        后台执行 OCR 和翻译。
-
-        如果同一区域 OCR 得到的文字未变化，
-        直接跳过翻译接口。
-        """
-        total_started_at = time.perf_counter()
-
-        with self._processing_lock:
-            ocr_started_at = time.perf_counter()
-
-            original_text = self.ocr_reader.read_text(
-                screenshot
-            )
-
-            ocr_ms = (
-                             time.perf_counter() - ocr_started_at
-                     ) * 1000
-
-            if not original_text:
-                self._last_ocr_text_by_region.pop(
-                    region_key,
-                    None,
-                )
-
-                total_ms = (
-                                   time.perf_counter() - total_started_at
-                           ) * 1000
-
-                print(
-                    "[PROFILE] "
-                    f"OCR: {ocr_ms:.1f} ms | "
-                    "Translate: skipped | "
-                    f"Worker total: {total_ms:.1f} ms | "
-                    "No text"
-                )
-
-                return "", ""
-
-            normalized_text = self._normalize_ocr_text(
-                original_text
-            )
-
-            previous_text = (
-                self._last_ocr_text_by_region.get(
-                    region_key
-                )
-            )
-
-            if normalized_text == previous_text:
-                total_ms = (
-                                   time.perf_counter() - total_started_at
-                           ) * 1000
-
-                print(
-                    "[PROFILE] "
-                    f"OCR: {ocr_ms:.1f} ms | "
-                    "Translate: skipped | "
-                    f"Worker total: {total_ms:.1f} ms | "
-                    "Unchanged OCR text"
-                )
-
-                # 返回原文字，但不再调用网络翻译。
-                # 空翻译代表 Overlay 不需要更新。
-                return original_text, ""
-
-            self._last_ocr_text_by_region[
-                region_key
-            ] = normalized_text
-
-            translation_started_at = time.perf_counter()
-
-            cached_translation = (
-                self._translation_cache.get(
-                    normalized_text
-                )
-            )
-
-            if cached_translation is not None:
-                translated_text = cached_translation
-                cache_hit = True
-
-                self._translation_cache.move_to_end(
-                    normalized_text
-                )
-
-            else:
-                translated_text = (
-                    self.text_translator.translate(
-                        original_text
-                    )
-                )
-
-                cache_hit = False
-
-                self._translation_cache[
-                    normalized_text
-                ] = translated_text
-
-                self._translation_cache.move_to_end(
-                    normalized_text
-                )
-
-                while (
-                        len(self._translation_cache)
-                        > self._cache_limit
-                ):
-                    self._translation_cache.popitem(
-                        last=False
-                    )
-
-            translation_ms = (
-                                     time.perf_counter()
-                                     - translation_started_at
-                             ) * 1000
-
-            total_ms = (
-                               time.perf_counter() - total_started_at
-                       ) * 1000
-
-            cache_status = (
-                "hit"
-                if cache_hit
-                else "miss"
-            )
-
-            print(
-                "[PROFILE] "
-                f"OCR: {ocr_ms:.1f} ms | "
-                f"Translate: {translation_ms:.1f} ms | "
-                f"Cache: {cache_status} | "
-                f"Worker total: {total_ms:.1f} ms"
-            )
-
-            return original_text, translated_text
-
-    def translate_screenshot(self, screenshot):
-        """
-        保留旧接口，避免其他代码调用时报错。
-        """
-        return self.translate_screenshot_sync(screenshot)
-
-    def translate_screen(self, region):
-        screenshot = self.capture_screen(region)
-        return self.translate_screenshot_sync(screenshot)
-
-    def _get_cached_translation(self, text):
-        cached = self._translation_cache.get(text)
-
-        if cached is not None:
-            self._translation_cache.move_to_end(text)
-            return cached
-
-        translated = self.text_translator.translate(text)
-
-        self._translation_cache[text] = translated
-        self._translation_cache.move_to_end(text)
-
-        while len(self._translation_cache) > self._cache_limit:
-            self._translation_cache.popitem(last=False)
-
-        return translated
-
-    @Slot(str, int, str, str)
-    def _handle_worker_finished(
+    @Slot(str, int, str, float)
+    def _handle_ocr_finished(
         self,
         region_key,
         request_id,
         original_text,
-        translated_text,
+        ocr_ms,
     ):
         if self._is_shutting_down:
             return
 
-        # 清除当前任务后再向区域发送结果。
-        self._active_task = None
+        self._active_ocr_task = None
 
-        self.translation_finished.emit(
-            region_key,
-            request_id,
-            original_text,
-            translated_text,
+        original_text = (
+            original_text or ""
+        ).strip()
+
+        print(
+            "[PROFILE][OCR] "
+            f"Region: {region_key[:6]} | "
+            f"OCR: {ocr_ms:.1f} ms"
         )
 
-        # 等当前结果的 UI 回调完成后，再启动下一个任务。
+        if not original_text:
+            self._last_successful_text_by_region.pop(
+                region_key,
+                None,
+            )
+
+            self.translation_finished.emit(
+                region_key,
+                request_id,
+                "",
+                "",
+            )
+
+            QTimer.singleShot(
+                0,
+                self._dispatch_next_ocr_task,
+            )
+            return
+
+        normalized_text = (
+            self._normalize_ocr_text(
+                original_text
+            )
+        )
+
+        previous_successful_text = (
+            self._last_successful_text_by_region.get(
+                region_key
+            )
+        )
+
+        # 画面发生变化，但 OCR 文字与上一次成功结果相同。
+        if (
+            normalized_text
+            == previous_successful_text
+        ):
+            print(
+                "[PROFILE][OCR] "
+                f"Region: {region_key[:6]} | "
+                "Translate: skipped | "
+                "Unchanged OCR text"
+            )
+
+            self.translation_finished.emit(
+                region_key,
+                request_id,
+                original_text,
+                "",
+            )
+
+            QTimer.singleShot(
+                0,
+                self._dispatch_next_ocr_task,
+            )
+            return
+
+        cached_translation = (
+            self._translation_cache.get(
+                normalized_text
+            )
+        )
+
+        if cached_translation is not None:
+            self._translation_cache.move_to_end(
+                normalized_text
+            )
+
+            self._last_successful_text_by_region[
+                region_key
+            ] = normalized_text
+
+            print(
+                "[PROFILE][Translate] "
+                f"Region: {region_key[:6]} | "
+                "Cache: hit"
+            )
+
+            self.translation_finished.emit(
+                region_key,
+                request_id,
+                original_text,
+                cached_translation,
+            )
+
+            QTimer.singleShot(
+                0,
+                self._dispatch_next_ocr_task,
+            )
+            return
+
+        self._queue_translation(
+            normalized_text=normalized_text,
+            source_text=original_text,
+            region_key=region_key,
+            request_id=request_id,
+        )
+
+        # 重点：
+        # 不等待翻译完成，OCR 立即处理下一张图。
         QTimer.singleShot(
             0,
-            self._dispatch_next_task,
+            self._dispatch_next_ocr_task,
         )
 
     @Slot(str, int, str)
-    def _handle_worker_error(
+    def _handle_ocr_error(
         self,
         region_key,
         request_id,
@@ -433,52 +495,273 @@ class TranslationEngine(QObject):
         if self._is_shutting_down:
             return
 
-        self._active_task = None
+        self._active_ocr_task = None
 
         self.translation_failed.emit(
             region_key,
             request_id,
-            error_message,
+            f"OCR failed: {error_message}",
         )
 
         QTimer.singleShot(
             0,
-            self._dispatch_next_task,
+            self._dispatch_next_ocr_task,
         )
 
-    @Slot()
-    def shutdown(self):
+    # =====================================================
+    # Translation Scheduler
+    # =====================================================
+
+    def _queue_translation(
+        self,
+        normalized_text,
+        source_text,
+        region_key,
+        request_id,
+    ):
+        waiter = (
+            region_key,
+            request_id,
+            source_text,
+        )
+
+        waiters = self._translation_waiters.setdefault(
+            normalized_text,
+            [],
+        )
+
+        waiters.append(waiter)
+
+        # 相同文字已经正在翻译。
+        if (
+            normalized_text
+            == self._active_translation_key
+        ):
+            print(
+                "[PROFILE][Translate] "
+                f"Region: {region_key[:6]} | "
+                "Deduplicated: active request"
+            )
+            return
+
+        # 相同文字已经在等待队列中。
+        if (
+            normalized_text
+            in self._pending_translation_tasks
+        ):
+            print(
+                "[PROFILE][Translate] "
+                f"Region: {region_key[:6]} | "
+                "Deduplicated: pending request"
+            )
+            return
+
+        if self._active_translation_key is None:
+            self._dispatch_translation_task(
+                normalized_text,
+                source_text,
+            )
+            return
+
+        self._pending_translation_tasks[
+            normalized_text
+        ] = source_text
+
+    def _dispatch_translation_task(
+        self,
+        normalized_text,
+        source_text,
+    ):
         if self._is_shutting_down:
             return
 
-        self._is_shutting_down = True
+        self._active_translation_key = (
+            normalized_text
+        )
 
-        self._pending_tasks.clear()
-        self._active_task = None
+        self.text_translation_requested.emit(
+            normalized_text,
+            source_text,
+        )
 
-        if self._worker_thread.isRunning():
-            self._worker_thread.quit()
+    def _dispatch_next_translation_task(self):
+        if self._is_shutting_down:
+            return
 
-            if not self._worker_thread.wait(5000):
-                print(
-                    "Warning: translation worker did not "
-                    "stop within five seconds."
-                )
+        if self._active_translation_key is not None:
+            return
+
+        if not self._pending_translation_tasks:
+            return
+
+        normalized_text, source_text = (
+            self._pending_translation_tasks.popitem(
+                last=False
+            )
+        )
+
+        # 等待区域可能已经全部关闭。
+        if not self._translation_waiters.get(
+            normalized_text
+        ):
+            QTimer.singleShot(
+                0,
+                self._dispatch_next_translation_task,
+            )
+            return
+
+        self._dispatch_translation_task(
+            normalized_text,
+            source_text,
+        )
+
+    @Slot(str, str, float)
+    def _handle_translation_finished(
+        self,
+        normalized_text,
+        translated_text,
+        translation_ms,
+    ):
+        if self._is_shutting_down:
+            return
+
+        self._active_translation_key = None
+
+        translated_text = (
+            translated_text or ""
+        ).strip()
+
+        print(
+            "[PROFILE][Translate] "
+            f"Translate: {translation_ms:.1f} ms | "
+            "Cache: miss"
+        )
+
+        self._store_cached_translation(
+            normalized_text,
+            translated_text,
+        )
+
+        waiters = self._translation_waiters.pop(
+            normalized_text,
+            [],
+        )
+
+        for (
+            region_key,
+            request_id,
+            original_text,
+        ) in waiters:
+            self._last_successful_text_by_region[
+                region_key
+            ] = normalized_text
+
+            self.translation_finished.emit(
+                region_key,
+                request_id,
+                original_text,
+                translated_text,
+            )
+
+        QTimer.singleShot(
+            0,
+            self._dispatch_next_translation_task,
+        )
+
+    @Slot(str, str)
+    def _handle_translation_error(
+        self,
+        normalized_text,
+        error_message,
+    ):
+        if self._is_shutting_down:
+            return
+
+        self._active_translation_key = None
+
+        waiters = self._translation_waiters.pop(
+            normalized_text,
+            [],
+        )
+
+        # 翻译失败时不记录 last successful text，
+        # 下次遇到相同文字仍然可以重新尝试。
+        for (
+            region_key,
+            request_id,
+            _original_text,
+        ) in waiters:
+            self.translation_failed.emit(
+                region_key,
+                request_id,
+                f"Translation failed: {error_message}",
+            )
+
+        QTimer.singleShot(
+            0,
+            self._dispatch_next_translation_task,
+        )
+
+    # =====================================================
+    # Helpers
+    # =====================================================
+
+    def _normalize_ocr_text(self, text):
+        if not text:
+            return ""
+
+        normalized = text.strip()
+
+        normalized = re.sub(
+            r"\s+",
+            " ",
+            normalized,
+        )
+
+        normalized = re.sub(
+            r"\s+([,.!?;:，。！？；：])",
+            r"\1",
+            normalized,
+        )
+
+        return normalized
+
+    def _store_cached_translation(
+        self,
+        normalized_text,
+        translated_text,
+    ):
+        self._translation_cache[
+            normalized_text
+        ] = translated_text
+
+        self._translation_cache.move_to_end(
+            normalized_text
+        )
+
+        while (
+            len(self._translation_cache)
+            > self._cache_limit
+        ):
+            self._translation_cache.popitem(
+                last=False
+            )
 
     def fingerprint_screenshot(self, screenshot):
         """
-        为截图生成一个快速指纹。
-
-        支持常见截图类型：
-        - PIL.Image
-        - numpy.ndarray
-        - bytes / bytearray
+        为截图生成快速指纹。
         """
-
         if screenshot is None:
             return None
 
-        if isinstance(screenshot, (bytes, bytearray, memoryview)):
+        if isinstance(
+            screenshot,
+            (
+                bytes,
+                bytearray,
+                memoryview,
+            ),
+        ):
             raw_data = bytes(screenshot)
 
         elif hasattr(screenshot, "tobytes"):
@@ -495,6 +778,45 @@ class TranslationEngine(QObject):
             digest_size=8,
         ).hexdigest()
 
+    # =====================================================
+    # Shutdown
+    # =====================================================
 
+    @Slot()
+    def shutdown(self):
+        if self._is_shutting_down:
+            return
+
+        self._is_shutting_down = True
+
+        self._pending_ocr_tasks.clear()
+        self._pending_translation_tasks.clear()
+        self._translation_waiters.clear()
+
+        self._active_ocr_task = None
+        self._active_translation_key = None
+
+        threads = (
+            (
+                "OCR",
+                self._ocr_thread,
+            ),
+            (
+                "translation",
+                self._translation_thread,
+            ),
+        )
+
+        for thread_name, thread in threads:
+            if not thread.isRunning():
+                continue
+
+            thread.quit()
+
+            if not thread.wait(5000):
+                print(
+                    f"Warning: {thread_name} worker "
+                    "did not stop within five seconds."
+                )
 
 
