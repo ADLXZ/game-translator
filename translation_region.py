@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -13,6 +13,14 @@ class TranslationRegion(QWidget):
         self.engine = engine
         self.drag_position = None
         self.is_translating = False
+        self.last_original_text = ""
+        self.is_auto_translating = False
+
+        self.translation_timer = QTimer(self)
+        self.translation_timer.setInterval(2000)
+        self.translation_timer.timeout.connect(
+            self.auto_translate_once
+        )
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -45,7 +53,11 @@ class TranslationRegion(QWidget):
             QColor(0, 0, 0, 40),
         )
 
-        pen = QPen(Qt.GlobalColor.red)
+        if self.is_auto_translating:
+            pen = QPen(Qt.GlobalColor.green)
+        else:
+            pen = QPen(Qt.GlobalColor.red)
+
         pen.setWidth(2)
 
         painter.setPen(pen)
@@ -54,10 +66,18 @@ class TranslationRegion(QWidget):
         )
 
     def mousePressEvent(self, event):
+        print("Mouse pressed:", event.button())
+
+        if event.button() == Qt.MouseButton.RightButton:
+            print("Right button detected")
+            self.toggle_auto_translation()
+            event.accept()
+            return
+
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag_position = (
-                event.globalPosition().toPoint()
-                - self.frameGeometry().topLeft()
+                    event.globalPosition().toPoint()
+                    - self.frameGeometry().topLeft()
             )
 
             event.accept()
@@ -130,18 +150,14 @@ class TranslationRegion(QWidget):
         QApplication.processEvents()
 
         try:
-            translated_text = self.engine.translate_screen(
-                region
+            original_text, translated_text = (
+                self.engine.translate_screen(region)
             )
 
             if translated_text:
-                self.overlay.set_translation(
-                    translated_text
-                )
+                self.overlay.set_translation(translated_text)
             else:
-                self.overlay.set_translation(
-                    "No text detected"
-                )
+                self.overlay.set_translation("No text detected")
 
         except Exception as error:
             print("Translation error:", error)
@@ -155,5 +171,86 @@ class TranslationRegion(QWidget):
             self.raise_()
             self.update_overlay_position()
             self.is_translating = False
+
+    def toggle_auto_translation(self):
+        if self.is_auto_translating:
+            self.stop_auto_translation()
+        else:
+            self.start_auto_translation()
+
+    def start_auto_translation(self):
+        self.is_auto_translating = True
+        self.last_original_text = ""
+
+        self.translation_timer.start()
+
+        self.overlay.set_translation(
+            "Auto translation started..."
+        )
+
+        self.update()
+        self.auto_translate_once()
+
+    def stop_auto_translation(self):
+        self.translation_timer.stop()
+
+        self.is_auto_translating = False
+        self.is_translating = False
+
+        self.overlay.set_translation(
+            "Auto translation stopped"
+        )
+
+        self.update()
+
+    def auto_translate_once(self):
+        if not self.is_auto_translating:
+            return
+
+        if self.is_translating:
+            return
+
+        self.is_translating = True
+
+        region = self.get_capture_region()
+
+        self.hide()
+        QApplication.processEvents()
+
+        try:
+            original_text, translated_text = (
+                self.engine.translate_screen(region)
+            )
+
+            if not original_text:
+                return
+
+            if original_text == self.last_original_text:
+                return
+
+            self.last_original_text = original_text
+
+            if translated_text:
+                self.overlay.set_translation(
+                    translated_text
+                )
+
+        except Exception as error:
+            print("Auto translation error:", error)
+
+            self.overlay.set_translation(
+                f"Translation failed:\n{error}"
+            )
+
+        finally:
+            self.show()
+            self.raise_()
+            self.update_overlay_position()
+            self.is_translating = False
+
+
+
+
+
 
 

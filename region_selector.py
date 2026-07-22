@@ -31,10 +31,18 @@ class RegionSelector(QWidget):
         self.raise_()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.toggle_auto_translation()
+            event.accept()
+            return
+
         if event.button() == Qt.MouseButton.LeftButton:
-            self.start_point = event.position().toPoint()
-            self.end_point = self.start_point
-            self.update()
+            self.drag_position = (
+                    event.globalPosition().toPoint()
+                    - self.frameGeometry().topLeft()
+            )
+
+            event.accept()
 
     def mouseMoveEvent(self, event):
         if self.start_point is not None:

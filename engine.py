@@ -15,18 +15,24 @@ class TranslationEngine:
         detected_lines = self.ocr_reader.read_text(image_path)
 
         if not detected_lines:
-            return ""
+            return "", ""
 
         original_text = "\n".join(detected_lines).strip()
 
         if not original_text:
-            return ""
+            return "", ""
 
         translated_text = self.text_translator.translate(
             original_text
         )
 
-        return translated_text
+        return original_text, translated_text
+
+
+
+
+
+
 
 
 
