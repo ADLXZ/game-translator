@@ -1,28 +1,57 @@
+# =========================
 # Python virtual environments
+# =========================
 .venv/
 venv/
+env/
 
+# =========================
 # Python cache
+# =========================
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 
-# PyCharm
+# =========================
+# Build / Packaging
+# =========================
+build/
+dist/
+*.spec
+
+# 如果你想保留 .spec 文件，就把上面这一行删掉
+
+# =========================
+# PyInstaller cache
+# =========================
+.pytest_cache/
+.mypy_cache/
+
+# =========================
+# IDE
+# =========================
 .idea/
+.vscode/
 
-# Generated screenshots
+# =========================
+# Screenshots
+# =========================
 screenshot.png
 screenshots/
+screenshot/
 *.png
 
+# 如果以后需要提交图片，请删除上一行 *.png，
+# 否则所有 png 都不会上传。
+
+# =========================
 # Secrets
+# =========================
 .env
 
-# Windows files
+# =========================
+# Windows
+# =========================
 Thumbs.db
 Desktop.ini
-
-*.pyc
-screenshot/*.png
-screenshot.png
-
-
