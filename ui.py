@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QCheckBox,
+    QSpinBox,
 )
 
 
@@ -81,7 +83,6 @@ class MainWindow(QWidget):
             self.provider_combo_box
         )
 
-
         # =============================================
         # Provider configuration panels
         # =============================================
@@ -119,6 +120,70 @@ class MainWindow(QWidget):
             self.change_translation_provider
         )
 
+
+
+        # =============================================
+        # OCR Mode
+        # =============================================
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        self.main_layout.addWidget(separator)
+
+        self.ocr_mode_label = QLabel(
+            "OCR Mode"
+        )
+
+        self.main_layout.addWidget(
+            self.ocr_mode_label
+        )
+
+        self.ocr_mode_combo_box = QComboBox()
+
+        self.ocr_mode_combo_box.addItem(
+            "Realtime",
+            "realtime",
+        )
+
+        self.ocr_mode_combo_box.addItem(
+            "Reading Game",
+            "reading",
+        )
+
+        self.ocr_mode_combo_box.addItem(
+            "Scrolling Text",
+            "scrolling",
+        )
+
+        self.main_layout.addWidget(
+            self.ocr_mode_combo_box
+        )
+
+        self.ocr_mode_combo_box.currentIndexChanged.connect(
+            self.change_ocr_mode
+        )
+
+        self.ocr_settings_stack = QStackedWidget()
+
+        self.realtime_panel = self._create_realtime_panel()
+        self.reading_panel = self._create_reading_panel()
+        self.scrolling_panel = self._create_scrolling_panel()
+
+        self.ocr_settings_stack.addWidget(
+            self.realtime_panel
+        )
+
+        self.ocr_settings_stack.addWidget(
+            self.reading_panel
+        )
+
+        self.ocr_settings_stack.addWidget(
+            self.scrolling_panel
+        )
+
+        self.main_layout.addWidget(
+            self.ocr_settings_stack
+        )
 
         # =============================================
         # Main controls
@@ -196,11 +261,23 @@ class MainWindow(QWidget):
         # Ensure the initial panel and provider match.
         self.provider_settings_stack.setCurrentIndex(0)
 
-
         self.engine.set_translation_provider(
             "google"
         )
 
+        self.provider_settings_stack.setCurrentIndex(
+            0
+        )
+
+        self.engine.set_ocr_mode(
+            "realtime"
+        )
+
+        self.ocr_settings_stack.setCurrentIndex(
+            0
+        )
+
+        self.update_status()
 
     # =================================================
     # Provider panels
@@ -620,10 +697,9 @@ class MainWindow(QWidget):
                 return
 
 
-        self.status_label.setText(
-            "Translation Service: "
-            f"{provider_name}"
-        )
+        self.update_status()
+
+
 
 
     # =================================================
@@ -774,6 +850,127 @@ class MainWindow(QWidget):
 
 
         super().closeEvent(event)
+
+    def change_ocr_mode(self, index):
+
+        mode = self.ocr_mode_combo_box.currentData()
+
+        self.engine.set_ocr_mode(mode)
+
+        self.ocr_settings_stack.setCurrentIndex(index)
+
+        self.update_status()
+
+    def update_status(self):
+
+        self.status_label.setText(
+
+            f"Translation: "
+            f"{self.provider_combo_box.currentText()}\n"
+
+            f"OCR Mode: "
+            f"{self.ocr_mode_combo_box.currentText()}"
+
+        )
+
+    def _create_realtime_panel(self):
+
+        panel = QFrame()
+
+        layout = QVBoxLayout(panel)
+
+        label = QLabel(
+            "No additional settings."
+        )
+
+        layout.addWidget(label)
+
+        layout.addStretch()
+
+        return panel
+
+    def _create_reading_panel(self):
+
+        panel = QFrame()
+
+        layout = QVBoxLayout(panel)
+
+        form = QFormLayout()
+
+        self.reading_delay_spinbox = QSpinBox()
+
+        self.reading_delay_spinbox.setRange(
+            100,
+            10000,
+        )
+
+        self.reading_delay_spinbox.setValue(
+            1800,
+        )
+
+        self.reading_delay_spinbox.setSuffix(
+            " ms"
+        )
+
+        self.reading_delay_spinbox.valueChanged.connect(
+            self.engine.set_reading_delay
+        )
+
+        form.addRow(
+            "Stable Delay:",
+            self.reading_delay_spinbox,
+        )
+
+        layout.addLayout(form)
+
+        return panel
+
+    def _create_scrolling_panel(self):
+
+        panel = QFrame()
+
+        layout = QVBoxLayout(panel)
+
+        layout.addWidget(
+            QLabel(
+                "Scrolling mode is under development."
+            )
+        )
+
+        layout.addStretch()
+
+        return panel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -18,7 +18,11 @@ from translation_worker import (
     OCRWorker,
     TextTranslationWorker,
 )
-
+from ocr_strategy import (
+    RealtimeStrategy,
+    ReadingStrategy,
+    ScrollingStrategy,
+)
 
 class TranslationEngine(QObject):
     """
@@ -190,6 +194,8 @@ class TranslationEngine(QObject):
 
         self._ocr_thread.start()
 
+        self._ocr_strategy = RealtimeStrategy()
+
         # -------------------------------------------------
         # Translation Thread
         # -------------------------------------------------
@@ -320,6 +326,20 @@ class TranslationEngine(QObject):
             region_key,
             None,
         )
+
+        self._reading_candidates.pop(
+            region_key,
+            None,
+        )
+
+        reading_timer = self._reading_timers.pop(
+            region_key,
+            None,
+        )
+
+        if reading_timer is not None:
+            reading_timer.stop()
+            reading_timer.deleteLater()
 
         empty_translation_keys = []
 
@@ -525,11 +545,12 @@ class TranslationEngine(QObject):
             )
             return
 
-        self._queue_translation(
-            normalized_text=normalized_text,
-            source_text=original_text,
-            region_key=region_key,
-            request_id=request_id,
+        self._ocr_strategy.handle_ocr_result(
+            self,
+            region_key,
+            request_id,
+            normalized_text,
+            original_text,
         )
 
         # 重点：
@@ -619,20 +640,12 @@ class TranslationEngine(QObject):
             request_id,
         ) = candidate
 
-        if self._reading_mode:
-            self._schedule_reading_translation(
-                normalized_text=normalized_text,
-                source_text=original_text,
-                region_key=region_key,
-                request_id=request_id,
-            )
-        else:
-            self._queue_translation(
-                normalized_text=normalized_text,
-                source_text=original_text,
-                region_key=region_key,
-                request_id=request_id,
-            )
+        self._queue_translation(
+            normalized_text=normalized_text,
+            source_text=source_text,
+            region_key=region_key,
+            request_id=request_id,
+        )
 
     def _queue_translation(
         self,
@@ -1010,6 +1023,64 @@ class TranslationEngine(QObject):
             "Reading Game Mode:",
             "enabled" if enabled else "disabled",
         )
+
+    def set_reading_delay(
+            self,
+            delay_ms,
+    ):
+        self._reading_delay_ms = max(
+            100,
+            int(delay_ms),
+        )
+
+        print(
+            "Reading delay:",
+            self._reading_delay_ms,
+            "ms",
+        )
+
+    def set_ocr_mode(self, mode: str):
+        normalized_mode = str(mode).strip().lower()
+
+        # 切换模式时，停止 Reading 模式遗留的计时器。
+        for timer in self._reading_timers.values():
+            timer.stop()
+
+        self._reading_candidates.clear()
+
+        if normalized_mode == "realtime":
+            self._ocr_strategy = RealtimeStrategy()
+            self._reading_mode = False
+
+        elif normalized_mode == "reading":
+            self._ocr_strategy = ReadingStrategy()
+            self._reading_mode = True
+
+        elif normalized_mode == "scrolling":
+            self._ocr_strategy = ScrollingStrategy()
+            self._reading_mode = False
+
+        else:
+            raise ValueError(
+                f"Unknown OCR mode: {mode}"
+            )
+
+        print(
+            "OCR mode changed to:",
+            normalized_mode,
+        )
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
