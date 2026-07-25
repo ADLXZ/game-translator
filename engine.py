@@ -105,6 +105,24 @@ class TranslationEngine(QObject):
         self._pending_ocr_tasks = OrderedDict()
 
         # -------------------------------------------------
+        # Reading Game Mode
+        # -------------------------------------------------
+
+        # Whether to delay translation until OCR text
+        # stops changing.
+        self._reading_mode = False
+
+        # OCR text must remain unchanged for this long
+        # before translation starts.
+        self._reading_delay_ms = 1800
+
+        # region_key -> latest OCR candidate
+        self._reading_candidates = {}
+
+        # region_key -> QTimer
+        self._reading_timers = {}
+
+        # -------------------------------------------------
         # Translation Scheduler
         # -------------------------------------------------
 
@@ -547,6 +565,74 @@ class TranslationEngine(QObject):
     # =====================================================
     # Translation Scheduler
     # =====================================================
+    def _schedule_reading_translation(
+            self,
+            normalized_text,
+            source_text,
+            region_key,
+            request_id,
+    ):
+        self._reading_candidates[region_key] = (
+            normalized_text,
+            source_text,
+            request_id,
+        )
+
+        timer = self._reading_timers.get(
+            region_key
+        )
+
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+
+            timer.timeout.connect(
+                lambda key=region_key:
+                self._commit_reading_translation(
+                    key
+                )
+            )
+
+            self._reading_timers[
+                region_key
+            ] = timer
+
+        timer.start(
+            self._reading_delay_ms
+        )
+
+    def _commit_reading_translation(
+            self,
+            region_key,
+    ):
+        candidate = self._reading_candidates.pop(
+            region_key,
+            None,
+        )
+
+        if candidate is None:
+            return
+
+        (
+            normalized_text,
+            source_text,
+            request_id,
+        ) = candidate
+
+        if self._reading_mode:
+            self._schedule_reading_translation(
+                normalized_text=normalized_text,
+                source_text=original_text,
+                region_key=region_key,
+                request_id=request_id,
+            )
+        else:
+            self._queue_translation(
+                normalized_text=normalized_text,
+                source_text=original_text,
+                region_key=region_key,
+                request_id=request_id,
+            )
 
     def _queue_translation(
         self,
@@ -885,6 +971,52 @@ class TranslationEngine(QObject):
         print(
             "Baidu Translate credentials updated."
         )
+
+    def set_openai_configuration(
+            self,
+            api_key,
+            model="gpt-5-mini",
+            style="Natural",
+    ):
+        if self._is_shutting_down:
+            return
+
+        self.text_translator.set_openai_configuration(
+            api_key=api_key,
+            model=model,
+            style=style,
+        )
+
+        self._translation_cache.clear()
+        self._last_successful_text_by_region.clear()
+
+        print(
+            "OpenAI configuration updated."
+        )
+
+    def set_reading_mode(
+            self,
+            enabled,
+    ):
+        self._reading_mode = bool(enabled)
+
+        if not enabled:
+            for timer in self._reading_timers.values():
+                timer.stop()
+
+            self._reading_candidates.clear()
+
+        print(
+            "Reading Game Mode:",
+            "enabled" if enabled else "disabled",
+        )
+
+
+
+
+
+
+
 
 
 
